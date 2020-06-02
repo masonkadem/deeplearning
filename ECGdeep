@@ -1,0 +1,129 @@
+%ECG deep
+
+close all, clear all, clc; 
+fs = filesep;
+
+parentDir = '~/Google Drive/deep/ECG/' ;
+addpath(genpath([parentDir fs 'functions']))
+dataDir   = 'data';
+
+%load data
+load(fullfile(parentDir,'ECGData.mat'))
+
+%create subdirectories for each label
+helperCreateECGDirectories(ECGData,parentDir,dataDir)
+
+%plot representative for each category
+helperPlotReps(ECGData)
+
+%create the scalograms: 1) precompute CWT filterbank 2) examine one
+%scalogram 3) use filterbank to take the CWT of the first 1000 samples of
+%signal and obtain scalogram from the coeff
+Fs = 128;
+fb = cwtfilterbank('SignalLength',1000,...  % 1000 samples
+    'SamplingFrequency',Fs,...
+    'VoicesPerOctave',12);
+sig = ECGData.Data(1,1:1000);
+[cfs,frq] = wt(fb,sig);
+t = (0:999)/Fs;figure;pcolor(t,frq,abs(cfs))
+set(gca,'yscale','log');shading interp;axis tight;
+title('Scalogram');xlabel('Time (s)');ylabel('Frequency (Hz)')
+
+% convert scalograms as RGB images with input size of net
+helperCreateRGBfromTF(ECGData,parentDir,dataDir)
+
+% load scalogram images as datastore
+allimg = imageDatastore(fullfile(parentDir,dataDir), 'IncludeSubfolders',true,'LabelSource','foldernames');
+
+%split data
+[itrain,ivalid] = splitEachLabel(allimg,0.8,'randomized');
+disp(['Number of training images: ',num2str(numel(itrain.Files))]);
+
+disp(['Number of validation images: ',num2str(numel(ivalid.Files))]);
+
+%load neural net
+net = googlenet;
+
+%display layer graph
+lgraph = layerGraph(net);
+numberOfLayers = numel(lgraph.Layers);
+figure('Units','normalized','Position',[0.1 0.1 0.8 0.8]);
+plot(lgraph)
+title(['GoogLeNet Layer Graph: ',num2str(numberOfLayers),' Layers']);
+
+%find input size
+net.Layers(1)
+
+%modify network parameters
+%new dropout layer
+
+newDropoutLayer = dropoutLayer(0.6,'Name','new_Dropout');  % ne dropout layer, prob 0.6
+lgraph = replaceLayer(lgraph,'pool5-drop_7x7_s1',newDropoutLayer);
+
+%replace end-2 layer with layer equal to number of classes
+numClasses = numel(categories(itrain.Labels));
+newConnectedLayer = fullyConnectedLayer(numClasses,'Name','new_fc',...   % also net.Layers(end-2) = fullConnectedLayer(numClasses)
+    'WeightLearnRateFactor',5,'BiasLearnRateFactor',5);     % increase learning rate factors
+lgraph = replaceLayer(lgraph,'loss3-classifier',newConnectedLayer);
+
+%replace classification layer
+newClassLayer = classificationLayer('Name','new_classoutput');  
+lgraph = replaceLayer(lgraph,'output',newClassLayer);
+
+%opts
+options = trainingOptions('sgdm',...
+    'MiniBatchSize',15,...
+    'MaxEpochs',20,...
+    'InitialLearnRate',1e-4,...
+    'ValidationData',ivalid,...
+    'ValidationFrequency',10,...
+    'Verbose',1,...
+    'ExecutionEnvironment','cpu',...
+    'Plots','training-progress');
+rng default
+
+%retrain net
+trainedGN = trainNetwork(itrain,lgraph,options);
+
+%inspect classification output layer to ensure lyayer includes all classes
+trainedGN.Layers(end)
+
+%evaluate accuracy
+[YPred,probs] = classify(trainedGN,ivalid);
+accuracy = mean(YPred==ivalid.Labels);
+disp(['Accuracy: ',num2str(100*accuracy),'%'])
+
+
+%explore activations
+
+wghts = trainedGN.Layers(2).Weights;
+wghts = rescale(wghts);
+wghts = imresize(wghts,5);
+figure
+montage(wghts)
+title('First Convolutional Layer Weights')
+
+convLayer = 'conv1-7x7_s2';
+
+imgClass = 'ARR';
+imgName = 'ARR_10.jpg';
+imarr = imread(fullfile(parentDir,dataDir,imgClass,imgName));
+
+trainingFeaturesARR = activations(trainedGN,imarr,convLayer);
+sz = size(trainingFeaturesARR);
+trainingFeaturesARR = reshape(trainingFeaturesARR,[sz(1) sz(2) 1 sz(3)]);
+figure
+montage(rescale(trainingFeaturesARR),'Size',[8 8])
+title([imgClass,' Activations'])
+
+%compare strongest channel with original image
+
+imgSize = size(imarr);
+imgSize = imgSize(1:2);
+[~,maxValueIndex] = max(max(max(trainingFeaturesARR)));
+arrMax = trainingFeaturesARR(:,:,:,maxValueIndex);
+arrMax = rescale(arrMax);
+arrMax = imresize(arrMax,imgSize);
+figure;
+imshowpair(imarr,arrMax,'montage')
+title(['Strongest ',imgClass,' Channel: ',num2str(maxValueIndex)])
