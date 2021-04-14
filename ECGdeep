@@ -3,7 +3,7 @@
 close all, clear all, clc; 
 fs = filesep;
 
-parentDir = '~/Google Drive/deep/ECG/' ;
+parentDir = '~PATH' ;
 addpath(genpath([parentDir fs 'functions']))
 dataDir   = 'data';
 
@@ -92,7 +92,6 @@ trainedGN.Layers(end)
 [YPred,probs] = classify(trainedGN,ivalid);
 accuracy = mean(YPred==ivalid.Labels);
 disp(['Accuracy: ',num2str(100*accuracy),'%'])
-
 
 %explore activations
 
